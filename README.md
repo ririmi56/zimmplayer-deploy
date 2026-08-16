@@ -118,10 +118,40 @@ de `snapserver.conf` n'est nécessaire : chaque session y enregistre son propre
 flux à la volée. Deux réglages sont obligatoires si `SNAPCAST_ENABLED=true` :
 
 - `SNAPCAST_ADVERTISE_HOST` — l'adresse de **cette API**, vue depuis
-  snapserver (c'est lui qui vient s'y connecter, pas l'inverse). Doit être une
-  IP joignable depuis snapserver, pas un nom d'hôte.
+  snapserver (c'est lui qui vient s'y connecter, pas l'inverse). **Peut être un
+  nom d'hôte** : l'API le résout elle-même en IP (`socket.gethostbyname`) à
+  chaque enregistrement de flux — snapserver, lui, ne reçoit qu'une IP dans
+  l'URI, mais c'est l'API qui s'en charge, pas vous.
 - La plage `SNAPCAST_PORT_START`…`SNAPCAST_PORT_END` doit être joignable
   depuis snapserver — un port par session diffusée simultanément.
+
+### Snapcast et Kubernetes (ou tout environnement à IP non stable)
+
+Si l'API tourne dans un pod dont l'IP change à chaque reprogrammation,
+**ne pas** utiliser cette IP directement dans `SNAPCAST_ADVERTISE_HOST` :
+
+- si snapserver vit **dans le même cluster**, pointer vers le nom DNS d'un
+  **Service** stable (`zimmplayer-api.mon-namespace.svc.cluster.local`, ou en
+  forme courte si même namespace) plutôt que vers un pod. Le Service garde la
+  même IP virtuelle quel que soit le pod qui le sert à un instant donné, et
+  l'API la re-résout à chaque session créée et à chaque redémarrage
+  (`restore()` reconstruit tous les flux au démarrage) — un pod remplacé ne
+  casse donc rien.
+- si snapserver vit **hors du cluster**, l'IP virtuelle d'un Service
+  `ClusterIP` n'est en général pas joignable de l'extérieur : il faut une
+  adresse réellement externe (`NodePort`, `LoadBalancer`/MetalLB, ou
+  `hostNetwork` sur le pod), et c'est celle-là qu'il faut avancer.
+- la plage `SNAPCAST_PORT_START`…`_END` doit être **explicitement déclarée**
+  dans le Service (chaque port un par un — Kubernetes ne sait pas exposer une
+  plage dynamique) ou, plus simple si le cas s'y prête, faire tourner le pod
+  en `hostNetwork: true`.
+
+**Contrainte plus fondamentale, indépendante de Kubernetes** : ce mécanisme
+garde son état (flux ouverts, sockets en écoute) **en mémoire du process
+API**, jamais partagé entre plusieurs instances. Snapcast n'est donc
+utilisable qu'avec **une seule replica** de `api` à la fois — un
+`Deployment` avec `replicas: 1` (ou un `StatefulSet` à une seule instance) et
+sans mise à l'échelle automatique sur ce composant.
 
 ## Livrable pour un réseau airgap
 
