@@ -7,6 +7,10 @@
 services:
   web:
     image: ghcr.io/ririmi56/zimmplayer-front:${FRONT_TAG:-latest}
+    environment:
+      # Doit toujours designer le meme MinIO que S3_ENDPOINT ci-dessous : c'est
+      # nginx qui expose /s3 au navigateur, en proxifiant vers cette adresse.
+      MINIO_UPSTREAM: ${S3_ENDPOINT:-http://minio:9000}
     depends_on:
       - api
       - minio
@@ -18,10 +22,14 @@ services:
     image: ghcr.io/ririmi56/zimmplayer-back:${BACK_TAG:-latest}
     environment:
       DATABASE_URL: mysql+pymysql://zimmplayer:${DB_PASSWORD:?definir DB_PASSWORD}@mariadb:3306/zimmplayer?charset=utf8mb4
-      S3_ENDPOINT: http://minio:9000
+      # Par defaut, le MinIO fourni par ce compose. Surchargeables pour un
+      # MinIO deja deploye ailleurs sur le reseau (voir README.md) — dans ce
+      # cas, S3_ACCESS_KEY/S3_SECRET_KEY n'ont pas besoin d'etre le compte
+      # root : l'appli ne fait jamais que lister et lire le bucket.
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
       S3_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?definir PUBLIC_BASE_URL}/s3
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?definir MINIO_ROOT_PASSWORD}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?definir MINIO_ROOT_PASSWORD ou S3_SECRET_KEY}}
       S3_BUCKET: ${S3_BUCKET:-music}
       S3_PREFIX: ${S3_PREFIX:-}
       COVER_DIR: /data/covers
