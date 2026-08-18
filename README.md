@@ -2,9 +2,11 @@
 
 [![Docker](https://img.shields.io/badge/images-GHCR-blue)](https://github.com/ririmi56?tab=packages)
 
-Stack complète de [Zimmplayer](https://github.com/ririmi56/zimmplayer-back), à
-partir des images publiées sur GHCR — rien à construire, rien d'autre à
-cloner. Trois dépôts composent le projet :
+Stack de [Zimmplayer](https://github.com/ririmi56/zimmplayer-back), à partir
+des images publiées sur GHCR — rien à construire, rien d'autre à cloner. Le
+**stockage n'est pas fourni** : l'application se branche sur un MinIO (ou un
+service compatible S3) déjà présent sur le réseau. Trois dépôts composent le
+projet :
 
 | Dépôt | Contenu |
 |---|---|
@@ -16,13 +18,16 @@ cloner. Trois dépôts composent le projet :
 
 ```bash
 cp .env.example .env
-# éditer .env : PUBLIC_BASE_URL et les mots de passe
+# éditer .env : PUBLIC_BASE_URL, les accès au MinIO du réseau, les mots de passe
 docker compose up -d
 ```
 
 Ensuite : alimenter le bucket MinIO avec la musique (organisée en
 `Artiste/Album/NN - Titre.ext`), puis lancer un scan depuis la page
 **Administration** de l'application.
+
+Pas de MinIO sous la main pour un premier essai ? Un service jetable est fourni
+derrière un profil, voir [MinIO jetable](#minio-jetable-pour-un-essai).
 
 ```bash
 curl -s localhost/api/health     # {"status":"ok","database":"ok"}
@@ -38,29 +43,32 @@ moindre écart, et rien ne se lit — pas d'erreur explicite côté interface.
 
 ## Services et variables d'environnement
 
-Le compose démarre quatre services : `web` (front + reverse proxy nginx),
-`api`, `mariadb`, `minio`. Voir [`.env.example`](./.env.example) pour la liste
-complète et les valeurs par défaut ; l'essentiel :
+Le compose démarre trois services : `web` (front + reverse proxy nginx), `api`
+et `mariadb`. Voir [`.env.example`](./.env.example) pour la liste complète et
+les valeurs par défaut ; l'essentiel :
 
 | Variable | Rôle |
 |---|---|
 | `PUBLIC_BASE_URL` | **Obligatoire.** Adresse exacte vue par les utilisateurs |
+| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | **Obligatoires.** Le MinIO du réseau, voir juste en dessous |
 | `HTTP_PORT` | Port d'écoute de l'application (défaut `80`) |
 | `DB_ROOT_PASSWORD`, `DB_PASSWORD` | Secrets MariaDB — à changer impérativement |
-| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Secrets du MinIO fourni par ce compose — à changer impérativement, sauf si vous utilisez `S3_ENDPOINT`/`S3_ACCESS_KEY`/`S3_SECRET_KEY` ci-dessous à la place |
-| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Facultatif — pointer vers un MinIO déjà déployé, voir juste en dessous |
 | `S3_BUCKET`, `S3_PREFIX` | Bucket et sous-dossier à indexer |
+| `S3_REGION` | Région annoncée dans la signature SigV4 (défaut `us-east-1`) |
 | `FRONT_TAG`, `BACK_TAG` | Version des images à déployer (`latest`, un tag `X.Y.Z`, ou un sha court — voir les [packages GHCR](https://github.com/ririmi56?tab=packages) pour ce qui est disponible) |
 | `SNAPCAST_*` | Facultatif, voir ci-dessous |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Uniquement pour le MinIO jetable du profil `minio` |
 
-## Utiliser un MinIO déjà déployé
+`S3_REGION` n'a aucune importance face à MinIO, qui accepte n'importe quelle
+valeur — mais un vrai S3 exige la région du bucket, faute de quoi il rejette la
+signature.
 
-Le compose fournit un MinIO tout prêt, mais rien n'oblige à s'en servir :
-renseigner `S3_ENDPOINT`, `S3_ACCESS_KEY` et `S3_SECRET_KEY` dans `.env` pointe
-l'application vers n'importe quel MinIO (ou service S3 compatible) déjà
-présent sur le réseau, à la place. Ces trois variables prennent le pas sur
-`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` pour l'API, et sont aussi répercutées
-côté `web` (qui expose `/s3` au navigateur) — un seul endroit à régler.
+## Brancher le stockage
+
+`S3_ENDPOINT`, `S3_ACCESS_KEY` et `S3_SECRET_KEY` pointent l'application vers
+n'importe quel MinIO (ou service compatible S3) du réseau. Elles servent à la
+fois à l'API et au service `web`, qui expose `/s3` au navigateur — un seul
+endroit à régler.
 
 **Aucun besoin du compte root de ce MinIO-là.** L'application ne fait jamais
 que lister et lire le bucket — jamais écrire, jamais administrer — donc un
@@ -102,21 +110,49 @@ S3_ACCESS_KEY=zimmplayer-reader
 S3_SECRET_KEY=une-cle-secrete-dediee
 ```
 
-Pour omettre complètement le `minio` fourni par ce compose plutôt que de le
-laisser tourner sans s'en servir, `--no-deps` est nécessaire — `depends_on`
-sinon le redémarre de toute façon, même absent de la liste :
+### MinIO jetable pour un essai
+
+Pour essayer la stack sans stockage sous la main, le compose embarque un
+service `minio`. Il est placé derrière un **profil**, donc `docker compose
+up -d` ne le démarre pas ; il faut le demander :
 
 ```bash
-docker compose up -d --no-deps web api mariadb
+docker compose --profile minio up -d
 ```
+
+Il faut alors le désigner comme stockage, avec des identifiants cohérents :
+
+```bash
+S3_ENDPOINT=http://minio:9000
+S3_ACCESS_KEY=minioadmin           # = MINIO_ROOT_USER
+S3_SECRET_KEY=changez-moi-aussi    # = MINIO_ROOT_PASSWORD
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=changez-moi-aussi
+```
+
+Le bucket (`S3_BUCKET`, `music` par défaut) reste à créer une fois, depuis la
+console MinIO — décommenter son port dans le compose pour y accéder.
+
+**À réserver aux essais** : ce MinIO stocke la musique dans un volume Docker
+local et ne sert qu'à voir tourner l'application. Un déploiement réel se
+branche sur le stockage du réseau.
 
 ## Snapcast (facultatif)
 
 Zimmplayer ne fournit pas de serveur Snapcast — il s'y connecte. Il en faut
 donc un déjà présent sur le réseau pour activer ce mode. Aucune modification
 de `snapserver.conf` n'est nécessaire : chaque session y enregistre son propre
-flux à la volée. Deux réglages sont obligatoires si `SNAPCAST_ENABLED=true` :
+flux à la volée.
 
+**Un seul port de snapserver est utilisé** : celui de son serveur HTTP intégré
+(`SNAPCAST_HTTP_PORT`, 1780 par défaut), qui porte à la fois le contrôle
+JSON-RPC (`/jsonrpc`) et l'audio (`/stream`). Le port de contrôle TCP 1705 n'a
+plus besoin d'être ouvert ni déclaré.
+
+Réglages obligatoires si `SNAPCAST_ENABLED=true` :
+
+- `SNAPCAST_HOST` et `SNAPCAST_HTTP_PORT` — le serveur HTTP de snapserver, vu
+  depuis l'API.
 - `SNAPCAST_ADVERTISE_HOST` — l'adresse de **cette API**, vue depuis
   snapserver (c'est lui qui vient s'y connecter, pas l'inverse). **Peut être un
   nom d'hôte** : l'API le résout elle-même en IP (`socket.gethostbyname`) à
@@ -124,6 +160,35 @@ flux à la volée. Deux réglages sont obligatoires si `SNAPCAST_ENABLED=true` :
   l'URI, mais c'est l'API qui s'en charge, pas vous.
 - La plage `SNAPCAST_PORT_START`…`SNAPCAST_PORT_END` doit être joignable
   depuis snapserver — un port par session diffusée simultanément.
+
+### Snapcast en TLS
+
+Snapserver ne chiffre rien lui-même. `SNAPCAST_TLS=true` suppose donc un
+**reverse proxy TLS devant lui**, avec `SNAPCAST_HTTP_PORT` pointant sur ce
+proxy : contrôle et audio passent alors tous les deux en `wss://`.
+
+Le certificat est toujours vérifié, sans option pour désactiver ce contrôle.
+Avec une autorité maison — le cas courant en airgap — renseigner
+`SNAPCAST_TLS_CA_FILE` **et monter le certificat dans le conteneur `api`**,
+puisque le chemin est lu depuis l'intérieur :
+
+```yaml
+services:
+  api:
+    volumes:
+      - ./ma-ca.crt:/etc/ssl/certs/ma-ca.crt:ro
+```
+
+```dotenv
+SNAPCAST_TLS=true
+SNAPCAST_TLS_CA_FILE=/etc/ssl/certs/ma-ca.crt
+# Si l'on joint le serveur par IP alors que le certificat porte un nom :
+SNAPCAST_TLS_SERVER_NAME=snapserver.mon-reseau
+```
+
+À la différence de l'hôte, du port et de l'adresse annoncée, **ces trois
+réglages ne sont pas modifiables depuis l'écran Configuration** : les changer
+demande un redéploiement.
 
 ### Snapcast et Kubernetes (ou tout environnement à IP non stable)
 

@@ -39,14 +39,26 @@ cat > "$OUT/INSTALL.md" <<EOF
 2. Configurer :
 
        cp .env.example .env
-       # editer .env : PUBLIC_BASE_URL et les mots de passe
+       # editer .env : PUBLIC_BASE_URL, le stockage S3, les mots de passe
 
    PUBLIC_BASE_URL doit correspondre a l'adresse exacte que les utilisateurs
    taperont, port compris. Les URLs audio sont signees pour cette adresse.
 
-3. Demarrer :
+3. Choisir le stockage, puis demarrer.
 
-       docker compose up -d
+   - MinIO deja present sur le reseau airgap (cas normal) : renseigner
+     S3_ENDPOINT / S3_ACCESS_KEY / S3_SECRET_KEY, puis
+
+         docker compose up -d
+
+   - MinIO fourni par ce livrable (essai, ou site sans stockage) : mettre
+     S3_ENDPOINT=http://minio:9000, faire correspondre S3_ACCESS_KEY et
+     S3_SECRET_KEY a MINIO_ROOT_USER / MINIO_ROOT_PASSWORD, puis
+
+         docker compose --profile minio up -d
+
+     Le bucket (S3_BUCKET, \`music\` par defaut) est alors a creer une fois
+     depuis la console MinIO.
 
 4. Alimenter le bucket MinIO avec la musique, rangee en
    \`Artiste/Album/NN - Titre.ext\`, puis lancer un scan depuis la page
