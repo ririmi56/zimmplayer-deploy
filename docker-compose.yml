@@ -67,7 +67,10 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
       OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
-      OIDC_ADMIN_GROUP: ${OIDC_ADMIN_GROUP:-}
+      # Comptes toujours administrateurs (sub ou courriel, separes par des
+      # virgules). C'est par eux que l'on entre la premiere fois ; ils
+      # nomment ensuite les autres depuis la page Administration.
+      SUPER_ADMINS: ${SUPER_ADMINS:-}
       # Surcharge de TLS_CA_FILE, si le fournisseur est signe par une autre
       # autorite. Ce chemin-la n'est PAS monte automatiquement.
       OIDC_CA_FILE: ${OIDC_CA_FILE:-}
