@@ -56,6 +56,7 @@ les valeurs par défaut ; l'essentiel :
 | `S3_BUCKET`, `S3_PREFIX` | Bucket et sous-dossier à indexer |
 | `S3_REGION` | Région annoncée dans la signature SigV4 (défaut `us-east-1`) |
 | `FRONT_TAG`, `BACK_TAG` | Version des images à déployer (`latest`, un tag `X.Y.Z`, ou un sha court — voir les [packages GHCR](https://github.com/ririmi56?tab=packages) pour ce qui est disponible) |
+| `OIDC_*`, `SESSION_SECRET` | Authentification, facultative — voir ci-dessous |
 | `TLS_CA_FILE` | Autorité de certification interne — indispensable en airgap, voir ci-dessous |
 | `PROXY_SSL_VERIFY` | Vérification par nginx des upstreams `https` (défaut `off`) |
 | `SNAPCAST_*` | Facultatif, voir ci-dessous |
@@ -176,6 +177,57 @@ Trois points à connaître :
 
 Un mauvais chemin se voit tout de suite : `web` refuse de démarrer en nommant le
 fichier introuvable, et l'API échoue à son premier accès au stockage.
+
+## Authentification (OIDC, facultatif)
+
+Par defaut, chacun choisit un pseudo dans l'ecran Configuration et **rien
+n'est verifie**. `OIDC_ENABLED=true` remplace ce pseudo par l'identite du
+fournisseur.
+
+Seule l'URL de l'emetteur est declaree ; les points d'entree sont lus dans son
+document de decouverte. **N'importe quel fournisseur OIDC conforme convient** —
+Authentik, Keycloak, Dex, Zitadel, Entra.
+
+```dotenv
+OIDC_ENABLED=true
+OIDC_ISSUER=https://authentik.interne/application/o/zimmplayer/
+OIDC_CLIENT_ID=...
+OIDC_CLIENT_SECRET=...
+OIDC_ADMIN_GROUP=zimmplayer-admins
+SESSION_SECRET=          # openssl rand -hex 32, obligatoire
+```
+
+**L'URI de redirection a declarer chez le fournisseur** est
+`<PUBLIC_BASE_URL>/api/auth/callback`, au caractere pres. C'est de loin la
+premiere cause d'echec.
+
+### Cote Authentik
+
+1. **Fournisseur OAuth2/OpenID**, type de client **confidentiel** ;
+2. URI de redirection : `<PUBLIC_BASE_URL>/api/auth/callback` ;
+3. portees : `openid`, `profile`, `email`, plus la portee **groups** ;
+4. relever l'**URL de configuration OpenID** de l'application : c'est
+   `OIDC_ISSUER`, en retirant le `/.well-known/openid-configuration` final.
+
+Sans la portee `groups`, tout fonctionne mais aucun groupe n'arrive, donc
+personne n'obtient le role admin. C'est l'oubli le plus courant.
+
+### Certificats
+
+Le fournisseur est joint avec `TLS_CA_FILE` — la meme autorite interne que le
+reste (voir plus haut). `OIDC_CA_FILE` n'existe que pour le cas ou le
+fournisseur serait signe par une autre. **La verification n'est jamais
+desactivable** : un fournisseur d'identite usurpe permettrait de forger
+n'importe quelle connexion.
+
+### Ce que cela change, et ce que cela ne change pas encore
+
+- l'en-tete `X-User-Name` **cesse d'etre lue** : la laisser active offrirait un
+  chemin trivial pour se faire passer pour quelqu'un d'autre ;
+- le role est calcule a chaque requete depuis les groupes du jeton, sans table
+  d'utilisateurs a tenir a jour ;
+- **aucune route n'est encore restreinte.** Les roles sont lus et affiches ;
+  leur application viendra. La page Administration reste donc accessible.
 
 ## Snapcast (facultatif)
 
