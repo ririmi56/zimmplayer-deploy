@@ -56,6 +56,8 @@ les valeurs par défaut ; l'essentiel :
 | `S3_BUCKET`, `S3_PREFIX` | Bucket et sous-dossier à indexer |
 | `S3_REGION` | Région annoncée dans la signature SigV4 (défaut `us-east-1`) |
 | `FRONT_TAG`, `BACK_TAG` | Version des images à déployer (`latest`, un tag `X.Y.Z`, ou un sha court — voir les [packages GHCR](https://github.com/ririmi56?tab=packages) pour ce qui est disponible) |
+| `TLS_CA_FILE` | Autorité de certification interne — indispensable en airgap, voir ci-dessous |
+| `PROXY_SSL_VERIFY` | Vérification par nginx des upstreams `https` (défaut `off`) |
 | `SNAPCAST_*` | Facultatif, voir ci-dessous |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Uniquement pour le MinIO jetable du profil `minio` |
 
@@ -137,6 +139,44 @@ console MinIO — décommenter son port dans le compose pour y accéder.
 local et ne sert qu'à voir tourner l'application. Un déploiement réel se
 branche sur le stockage du réseau.
 
+## Autorité de certification interne (airgap)
+
+Sur un réseau airgap, les certificats sont signés par une **autorité maison**
+qu'aucune image publique ne connaît. Une seule variable la déclare :
+
+```dotenv
+TLS_CA_FILE=/etc/pki/mon-autorite.pem
+```
+
+Le chemin est celui de **l'hôte**. Le compose monte le fichier au même chemin
+dans `api` et `web`, en lecture seule : il n'y a rien d'autre à écrire. Laissée
+vide, la variable ne monte rien et les images utilisent leur magasin système.
+
+Elle couvre tout ce que l'API joint en chiffré :
+
+| Client | Ce qu'il joint |
+|---|---|
+| boto3 | `S3_ENDPOINT` — listage, téléchargement, signature des URLs |
+| ffmpeg | l'URL présignée du morceau, en lecture Snapcast |
+| websockets | le proxy TLS devant snapserver (voir `SNAPCAST_TLS`) |
+
+Trois points à connaître :
+
+- **le fichier remplace le magasin système**, il ne s'y ajoute pas. Pour joindre
+  aussi des serveurs à certificat public, y concaténer les deux jeux ;
+- **nginx est à part.** Le proxy `/s3` vers MinIO ne vérifie aucun certificat
+  par défaut, comme nginx en général. Dès que `S3_ENDPOINT` est en `https`,
+  ajouter `PROXY_SSL_VERIFY=on` : la vérification se fait alors avec
+  `TLS_CA_FILE`, ou avec le magasin de l'image si elle est vide ;
+- **ffmpeg ne vérifiait rien** jusqu'ici (`tls_verify` vaut `0` par défaut chez
+  lui). C'est désormais activé dès que l'URL est en `https`. Un stockage `https`
+  à certificat auto-signé et sans `TLS_CA_FILE` cessera donc de fonctionner —
+  c'est le but : l'URL présignée qui y transite porte les droits de lecture du
+  bucket.
+
+Un mauvais chemin se voit tout de suite : `web` refuse de démarrer en nommant le
+fichier introuvable, et l'API échoue à son premier accès au stockage.
+
 ## Snapcast (facultatif)
 
 Zimmplayer ne fournit pas de serveur Snapcast — il s'y connecte. Il en faut
@@ -168,23 +208,18 @@ Snapserver ne chiffre rien lui-même. `SNAPCAST_TLS=true` suppose donc un
 proxy : contrôle et audio passent alors tous les deux en `wss://`.
 
 Le certificat est toujours vérifié, sans option pour désactiver ce contrôle.
-Avec une autorité maison — le cas courant en airgap — renseigner
-`SNAPCAST_TLS_CA_FILE` **et monter le certificat dans le conteneur `api`**,
-puisque le chemin est lu depuis l'intérieur :
-
-```yaml
-services:
-  api:
-    volumes:
-      - ./ma-ca.crt:/etc/ssl/certs/ma-ca.crt:ro
-```
+Avec une autorité maison — le cas courant en airgap — il n'y a rien à ajouter
+ici : `TLS_CA_FILE` s'applique aussi à snapserver.
 
 ```dotenv
 SNAPCAST_TLS=true
-SNAPCAST_TLS_CA_FILE=/etc/ssl/certs/ma-ca.crt
 # Si l'on joint le serveur par IP alors que le certificat porte un nom :
 SNAPCAST_TLS_SERVER_NAME=snapserver.mon-reseau
 ```
+
+`SNAPCAST_TLS_CA_FILE` n'existe que pour le cas où le proxy de snapserver est
+signé par une **autre** autorité que le stockage. Ce chemin-là n'est pas monté
+automatiquement : il faut alors ajouter le volume soi-même.
 
 À la différence de l'hôte, du port et de l'adresse annoncée, **ces trois
 réglages ne sont pas modifiables depuis l'écran Configuration** : les changer
