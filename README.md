@@ -56,6 +56,7 @@ les valeurs par défaut ; l'essentiel :
 | `S3_BUCKET`, `S3_PREFIX` | Bucket et sous-dossier à indexer |
 | `S3_REGION` | Région annoncée dans la signature SigV4 (défaut `us-east-1`) |
 | `FRONT_TAG`, `BACK_TAG` | Version des images à déployer (`latest`, un tag `X.Y.Z`, ou un sha court — voir les [packages GHCR](https://github.com/ririmi56?tab=packages) pour ce qui est disponible) |
+| `OIDC_*`, `SUPER_ADMINS`, `SESSION_SECRET` | Authentification et administrateurs, facultatif — voir ci-dessous |
 | `TLS_CA_FILE` | Autorité de certification interne — indispensable en airgap, voir ci-dessous |
 | `PROXY_SSL_VERIFY` | Vérification par nginx des upstreams `https` (défaut `off`) |
 | `SNAPCAST_*` | Facultatif, voir ci-dessous |
@@ -176,6 +177,77 @@ Trois points à connaître :
 
 Un mauvais chemin se voit tout de suite : `web` refuse de démarrer en nommant le
 fichier introuvable, et l'API échoue à son premier accès au stockage.
+
+## Authentification (OIDC, facultatif)
+
+Par defaut, chacun choisit un pseudo dans l'ecran Configuration et **rien
+n'est verifie**. `OIDC_ENABLED=true` remplace ce pseudo par l'identite du
+fournisseur.
+
+Seule l'URL de l'emetteur est declaree ; les points d'entree sont lus dans son
+document de decouverte. **N'importe quel fournisseur OIDC conforme convient** —
+Authentik, Keycloak, Dex, Zitadel, Entra.
+
+```dotenv
+OIDC_ENABLED=true
+OIDC_ISSUER=https://authentik.interne/application/o/zimmplayer/
+OIDC_CLIENT_ID=...
+OIDC_CLIENT_SECRET=...
+SUPER_ADMINS=adrien@interne   # comptes toujours administrateurs
+SESSION_SECRET=               # openssl rand -hex 32, obligatoire
+```
+
+**L'URI de redirection a declarer chez le fournisseur** est
+`<PUBLIC_BASE_URL>/api/auth/callback`, au caractere pres. C'est de loin la
+premiere cause d'echec.
+
+### Cote Authentik
+
+1. **Fournisseur OAuth2/OpenID**, type de client **confidentiel** ;
+2. URI de redirection : `<PUBLIC_BASE_URL>/api/auth/callback` ;
+3. portees : `openid`, `profile`, `email`, plus la portee **groups** ;
+4. relever l'**URL de configuration OpenID** de l'application : c'est
+   `OIDC_ISSUER`, en retirant le `/.well-known/openid-configuration` final.
+
+Sans la portee `groups`, tout fonctionne mais aucun groupe n'arrive. Les
+groupes ne donnent aucun role — ils sont seulement affiches — mais c'est
+l'oubli le plus courant, autant le savoir.
+
+### Certificats
+
+Le fournisseur est joint avec `TLS_CA_FILE` — la meme autorite interne que le
+reste (voir plus haut). `OIDC_CA_FILE` n'existe que pour le cas ou le
+fournisseur serait signe par une autre. **La verification n'est jamais
+desactivable** : un fournisseur d'identite usurpe permettrait de forger
+n'importe quelle connexion.
+
+### Administrateurs
+
+`SUPER_ADMINS` liste les comptes **toujours** administrateurs, par `sub` ou par
+courriel. C'est par eux que l'on entre la premiere fois, et **leur role ne se
+retire pas depuis l'interface** : meme si la base est perdue, ces comptes-la
+font toujours entrer.
+
+Ils nomment ensuite les autres depuis la page **Administration**, ce qui est
+conserve en base. `/api/admin/*` repond **403** a qui n'est pas administrateur,
+et l'onglet disparait de la navigation.
+
+Trois refus deliberes : se retirer soi-meme le role, retrograder un compte de
+`SUPER_ADMINS`, et retirer le dernier administrateur quand aucun
+super-administrateur connu n'existe.
+
+**On ne peut promouvoir que quelqu'un qui s'est deja connecte au moins une
+fois** : aucune API OIDC standard ne permet de lister les comptes d'un
+fournisseur, l'application ne connait donc que ceux qu'elle a vus.
+
+Laisser `SUPER_ADMINS` vide expose a se retrouver sans administrateur du tout.
+L'API le signale au demarrage, dans ses journaux.
+
+Sans OIDC, tout le monde est administrateur : sans fournisseur d'identite,
+distinguer les roles n'aurait aucun fondement.
+
+L'en-tete `X-User-Name` **cesse d'etre lue** des qu'OIDC est actif : la laisser
+offrirait un chemin trivial pour se faire passer pour quelqu'un d'autre.
 
 ## Snapcast (facultatif)
 

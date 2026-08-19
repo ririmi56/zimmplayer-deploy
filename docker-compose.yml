@@ -57,6 +57,27 @@ services:
       # connait pas. Chemin absolu sur l'HOTE : il est monte tel quel dans les
       # conteneurs (voir volumes). Vide = magasin systeme des images.
       TLS_CA_FILE: ${TLS_CA_FILE:-}
+      # Identite. Desactive, chacun choisit un pseudo et rien n'est verifie.
+      # Active, l'identite vient du fournisseur et l'en-tete X-User-Name
+      # cesse d'etre lue. L'URI de redirection a declarer chez le fournisseur
+      # est <PUBLIC_BASE_URL>/api/auth/callback (voir README.md).
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
+      OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
+      # Comptes toujours administrateurs (sub ou courriel, separes par des
+      # virgules). C'est par eux que l'on entre la premiere fois ; ils
+      # nomment ensuite les autres depuis la page Administration.
+      SUPER_ADMINS: ${SUPER_ADMINS:-}
+      # Surcharge de TLS_CA_FILE, si le fournisseur est signe par une autre
+      # autorite. Ce chemin-la n'est PAS monte automatiquement.
+      OIDC_CA_FILE: ${OIDC_CA_FILE:-}
+      # Obligatoire des qu'OIDC est actif : l'API refuse de demarrer sans.
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Adresse publique, aussi utilisee pour construire l'URI de redirection.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?definir PUBLIC_BASE_URL}
       COVER_DIR: /data/covers
       SCAN_CONCURRENCY: ${SCAN_CONCURRENCY:-8}
       # Snapcast : valeurs par defaut, surchargeables depuis l'ecran de
