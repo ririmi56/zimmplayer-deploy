@@ -18,6 +18,16 @@ services:
       # Doit toujours designer le meme MinIO que S3_ENDPOINT ci-dessous : c'est
       # nginx qui expose /s3 au navigateur, en proxifiant vers cette adresse.
       MINIO_UPSTREAM: ${S3_ENDPOINT:?definir S3_ENDPOINT}
+      # nginx ne verifie AUCUN certificat d'upstream par defaut. Passer a `on`
+      # des que S3_ENDPOINT est en https, en montant l'autorite ci-dessous.
+      PROXY_SSL_VERIFY: ${PROXY_SSL_VERIFY:-off}
+      PROXY_SSL_CA_FILE: ${TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
+    volumes:
+      # Le certificat est monte au MEME chemin que sur l'hote : une seule
+      # variable, donc aucun risque que le chemin annonce et le chemin reel
+      # divergent. Non renseignee, la ligne se reduit a /dev/null sur
+      # /dev/null, sans effet.
+      - ${TLS_CA_FILE:-/dev/null}:${TLS_CA_FILE:-/dev/null}:ro
     depends_on:
       - api
     ports:
@@ -41,6 +51,12 @@ services:
       # Region annoncee dans la signature SigV4. MinIO l'accepte telle quelle ;
       # un vrai S3 exige celle du bucket, sans quoi la signature est rejetee.
       S3_REGION: ${S3_REGION:-us-east-1}
+      # Autorite de certification interne, pour TOUTES les connexions
+      # chiffrees sortantes : S3 (boto3 et ffmpeg) et snapserver. Sur un reseau
+      # airgap, les certificats sont signes par une autorite que l'image ne
+      # connait pas. Chemin absolu sur l'HOTE : il est monte tel quel dans les
+      # conteneurs (voir volumes). Vide = magasin systeme des images.
+      TLS_CA_FILE: ${TLS_CA_FILE:-}
       COVER_DIR: /data/covers
       SCAN_CONCURRENCY: ${SCAN_CONCURRENCY:-8}
       # Snapcast : valeurs par defaut, surchargeables depuis l'ecran de
@@ -54,10 +70,10 @@ services:
       SNAPCAST_PORT_START: ${SNAPCAST_PORT_START:-4960}
       SNAPCAST_PORT_COUNT: ${SNAPCAST_PORT_COUNT:-8}
       # TLS vers snapserver : les seuls reglages Snapcast qui ne sont PAS
-      # modifiables a chaud depuis l'ecran de configuration. Si
-      # SNAPCAST_TLS_CA_FILE est renseigne, monter aussi le certificat dans ce
-      # conteneur (voir README.md).
+      # modifiables a chaud depuis l'ecran de configuration.
       SNAPCAST_TLS: ${SNAPCAST_TLS:-false}
+      # Surcharge de TLS_CA_FILE : utile seulement si le proxy TLS de
+      # snapserver est signe par une autre autorite que le stockage.
       SNAPCAST_TLS_CA_FILE: ${SNAPCAST_TLS_CA_FILE:-}
       SNAPCAST_TLS_SERVER_NAME: ${SNAPCAST_TLS_SERVER_NAME:-}
     # Un port par session diffusee : c'est snapserver qui vient s'y connecter,
@@ -66,6 +82,8 @@ services:
       - "${SNAPCAST_PORT_START:-4960}-${SNAPCAST_PORT_END:-4967}:${SNAPCAST_PORT_START:-4960}-${SNAPCAST_PORT_END:-4967}"
     volumes:
       - covers:/data/covers
+      # Meme montage que pour `web` : voir le commentaire la-bas.
+      - ${TLS_CA_FILE:-/dev/null}:${TLS_CA_FILE:-/dev/null}:ro
     depends_on:
       mariadb:
         condition: service_healthy
