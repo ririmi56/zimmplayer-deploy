@@ -13,21 +13,28 @@ cd "$ROOT"
 
 FRONT_IMAGE="ghcr.io/ririmi56/zimmplayer-front:${FRONT_TAG:-latest}"
 BACK_IMAGE="ghcr.io/ririmi56/zimmplayer-back:${BACK_TAG:-latest}"
+# Snapserver, pour la chart Helm. L'image ne publie ni tag `latest` ni
+# manifeste multi-architecture : le tag porte l'architecture de la cible.
+SNAP_IMAGE="rfabri/snapserver:${SNAP_TAG:-amd64-latest}"
 
 echo "==> Recuperation des images"
 docker pull "$FRONT_IMAGE"
 docker pull "$BACK_IMAGE"
 docker pull mariadb:11
 docker pull minio/minio:latest
+docker pull "$SNAP_IMAGE"
 
 mkdir -p "$OUT"
 
 echo "==> Export des images (peut prendre plusieurs minutes)"
-docker save "$FRONT_IMAGE" "$BACK_IMAGE" mariadb:11 minio/minio:latest \
+docker save "$FRONT_IMAGE" "$BACK_IMAGE" "$SNAP_IMAGE" mariadb:11 minio/minio:latest \
   | gzip > "$OUT/images.tar.gz"
 
 cp docker-compose.yml "$OUT/"
 cp .env.example "$OUT/"
+# La chart Helm, pour une cible Kubernetes. Elle ne pese rien et evite d'avoir
+# a recloner le depot depuis un reseau qui n'y a pas acces.
+cp -r charts "$OUT/"
 
 cat > "$OUT/INSTALL.md" <<EOF
 # Installation sur la cible airgap
@@ -64,10 +71,37 @@ cat > "$OUT/INSTALL.md" <<EOF
    \`Artiste/Album/NN - Titre.ext\`, puis lancer un scan depuis la page
    Administration de l'application.
 
+## Cible Kubernetes
+
+Le dossier \`charts/zimmplayer\` contient la meme stack sous forme de chart
+Helm (front, API, MariaDB et snapserver). Les images doivent d'abord etre
+chargees dans le runtime de CHAQUE noeud — \`docker load\` ne suffit pas, sauf
+si le cluster tourne sous Docker :
+
+    # containerd (cas courant : k3s, kubeadm)
+    gunzip -c images.tar.gz | ctr -n k8s.io images import -
+
+    # ou, plus simple sur plusieurs noeuds : les pousser dans un registre
+    # interne au reseau, et regler image.back / image.front en consequence.
+
+Puis :
+
+    helm install zimmplayer charts/zimmplayer \\
+      --namespace zimmplayer --create-namespace \\
+      --set publicBaseUrl=http://musique.maison.lan \\
+      --set s3.endpoint=http://192.168.10.10:9000 \\
+      --set s3.accessKey=... --set s3.secretKey=... \\
+      --set mariadb.rootPassword=... --set mariadb.password=... \\
+      --set mariadb.persistence.storageClass=<votre-classe>
+
+\`s3.endpoint\` doit etre resolvable DEPUIS LE CLUSTER : nginx du service web
+refuse de demarrer si l'hote d'un upstream ne resout pas.
+
 ## Images incluses
 
 - $FRONT_IMAGE
 - $BACK_IMAGE
+- $SNAP_IMAGE
 - mariadb:11
 - minio/minio:latest
 

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: zimmplayer
+description: Zimmplayer — front, API, base MariaDB et snapserver, pour un reseau prive
+type: application
+# version : celle de la chart. appVersion : celle des images par defaut.
+# Les deux avancent ensemble ici, le depot ne publiant qu'une chart.
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/ririmi56/zimmplayer-deploy
+sources:
+  - https://github.com/ririmi56/zimmplayer-back
+  - https://github.com/ririmi56/zimmplayer-front
+  - https://github.com/ririmi56/zimmplayer-deploy
+keywords:
+  - music
+  - snapcast
+  - selfhosted
+maintainers:
+  - name: ririmi56

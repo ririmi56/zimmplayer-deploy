@@ -1,0 +1,185 @@
+# Zimmplayer — valeurs par defaut.
+#
+# Trois reglages n'ont pas de defaut possible et l'installation echoue tant
+# qu'ils manquent : publicBaseUrl, les acces S3, et les mots de passe de la
+# base. Tout le reste peut rester tel quel.
+
+# Adresse EXACTE que les utilisateurs taperont, port compris. Les URLs audio
+# sont signees pour cette adresse : au moindre ecart, MinIO rejette la
+# signature et plus rien ne se lit, sans message explicite a l'ecran.
+#   ex. http://musique.maison.lan   ou   http://192.168.10.20:8080
+publicBaseUrl: ""
+
+# ---------------------------------------------------------------------------
+# Stockage S3/MinIO — NON fourni par cette chart
+# ---------------------------------------------------------------------------
+# L'application ne fait que lister et lire le bucket : un compte limite a cet
+# usage suffit, inutile de lui donner le compte root du MinIO.
+#
+# ATTENTION : `endpoint` doit etre resolvable DEPUIS LE CLUSTER. C'est nginx
+# du service `web` qui le proxifie sous /s3, et nginx refuse de demarrer si
+# l'hote d'un upstream ne resout pas — le pod partirait en CrashLoopBackOff.
+# Une adresse IP evite toute dependance au DNS.
+s3:
+  endpoint: ""            # ex. http://192.168.10.10:9000
+  accessKey: ""
+  secretKey: ""
+  bucket: music
+  prefix: ""
+  # Sans importance pour MinIO, qui accepte n'importe quelle valeur ; un vrai
+  # S3 exige la region du bucket, faute de quoi il rejette la signature.
+  region: us-east-1
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+image:
+  # Vide = appVersion de la chart. Mettre `latest` pour suivre master.
+  tag: ""
+  pullPolicy: IfNotPresent
+  back: ghcr.io/ririmi56/zimmplayer-back
+  front: ghcr.io/ririmi56/zimmplayer-front
+imagePullSecrets: []
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+# Le nombre de replicas n'est volontairement pas reglable : voir le
+# commentaire en tete de templates/api-deployment.yaml.
+api:
+  # Pochettes extraites des fichiers : elles se regenerent a partir du bucket,
+  # mais un scan complet coute cher, d'ou un volume.
+  persistence:
+    enabled: true
+    size: 5Gi
+    # Voir mariadb.persistence.storageClass pour la convention.
+    storageClass: ""
+  scanConcurrency: 8
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      # Pas de limite CPU : chaque session en cours fait tourner un ffmpeg, et
+      # un decodage etrangle produit exactement le son hache que l'on cherche
+      # a eviter. La memoire, elle, est bornee.
+      memory: 2Gi
+
+# ---------------------------------------------------------------------------
+# Front (nginx : bundle React + point d'entree unique /, /api, /s3)
+# ---------------------------------------------------------------------------
+web:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Doit correspondre a publicBaseUrl, sans le schema ni le port.
+  host: ""
+  tls: []
+  #  - secretName: zimmplayer-tls
+  #    hosts: [musique.maison.lan]
+
+# ---------------------------------------------------------------------------
+# Base MariaDB
+# ---------------------------------------------------------------------------
+mariadb:
+  image: mariadb:11
+  # Sans defaut : l'installation echoue tant qu'ils ne sont pas donnes.
+  rootPassword: ""
+  password: ""
+  database: zimmplayer
+  user: zimmplayer
+  persistence:
+    size: 20Gi
+    # Vide  : la classe par defaut du cluster.
+    # "-"   : aucune classe (storageClassName: ""), pour lier un PV cree a la
+    #         main — le cas des clusters sans provisionneur dynamique.
+    # autre : le nom de la classe a utiliser.
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+# ---------------------------------------------------------------------------
+# Snapcast
+# ---------------------------------------------------------------------------
+# `enabled: false` ne deploie pas snapserver et laisse la sortie Snapcast
+# eteinte ; on peut alors brancher le snapserver du reseau depuis l'ecran
+# Configuration de l'application, qui persiste ce reglage en base.
+snapcast:
+  enabled: true
+  # Image tierce (Rogger Fabri), snapserver 0.35.
+  # Elle ne publie NI tag `latest` NI manifeste multi-architecture : le tag
+  # porte l'architecture. Sur ARM (Raspberry Pi), mettre `arm64v8-latest`.
+  image: rfabri/snapserver
+  tag: amd64-latest
+  service:
+    # ClusterIP suffit a l'application, qui parle a snapserver depuis le
+    # cluster. Les snapclients PHYSIQUES du reseau (enceintes, Pi) doivent
+    # eux joindre le port 1704 : passer alors en LoadBalancer ou NodePort.
+    type: ClusterIP
+    loadBalancerIP: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 512Mi
+  # Plage de ports que l'API ouvre, un par session diffusee. C'est snapserver
+  # qui vient s'y connecter : ils n'ont pas besoin d'etre exposes hors du
+  # cluster, mais snapserver doit joindre le pod de l'API dessus.
+  portStart: 4960
+  portCount: 8
+
+# ---------------------------------------------------------------------------
+# Identite (OIDC) — facultatif
+# ---------------------------------------------------------------------------
+# Desactive, chacun choisit un pseudo et rien n'est verifie. Active, l'identite
+# vient du fournisseur. L'URI de redirection a declarer chez lui est
+# <publicBaseUrl>/api/auth/callback.
+oidc:
+  enabled: false
+  issuer: ""
+  clientId: ""
+  clientSecret: ""
+  scopes: "openid profile email groups"
+  groupsClaim: "groups"
+  # Obligatoire des qu'OIDC est actif : l'API refuse de demarrer sans.
+  sessionSecret: ""
+
+# Comptes toujours administrateurs (sub ou courriel, separes par des virgules).
+# C'est par eux que l'on entre la premiere fois.
+superAdmins: ""
+
+# ---------------------------------------------------------------------------
+# Autorite de certification interne
+# ---------------------------------------------------------------------------
+# Sur un reseau airgap, les certificats sont signes par une autorite que les
+# images ne connaissent pas. Le certificat est fourni par un Secret ou un
+# ConfigMap existant, monte dans l'API et dans le front.
+tls:
+  # Nom d'un Secret ou ConfigMap existant contenant l'autorite.
+  existingSecret: ""
+  existingConfigMap: ""
+  key: ca.crt
+  # Verification par nginx des upstreams joints en https (MinIO). Passer a
+  # `on` des que s3.endpoint est en https.
+  proxySslVerify: "off"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

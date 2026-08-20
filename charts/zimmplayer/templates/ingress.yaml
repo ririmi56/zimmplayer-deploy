@@ -1,0 +1,36 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+L'hote doit correspondre a publicBaseUrl : les URLs audio sont signees pour
+cette adresse, et MinIO rejette la signature au moindre ecart.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host est obligatoire quand ingress.enabled vaut true" .Values.ingress.host | quote }}
+      http:
+        paths:
+          # Une seule regle : nginx du service `web` route deja /api et /s3
+          # vers l'API et le stockage. Dedoubler ce routage dans l'Ingress
+          # ferait deux endroits a garder d'accord pour rien.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "zimmplayer.fullname" . }}-web
+                port:
+                  number: {{ .Values.web.service.port }}
+{{- end }}

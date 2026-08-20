@@ -1,0 +1,65 @@
+Zimmplayer {{ .Chart.AppVersion }} est installe dans le namespace {{ .Release.Namespace }}.
+
+Suivre le demarrage :
+
+    kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "zimmplayer.fullname" . }}-api
+
+{{ if .Values.ingress.enabled -}}
+L'application repond sur https://{{ .Values.ingress.host }} (ou http, selon
+votre Ingress).
+{{- else if eq .Values.web.service.type "ClusterIP" -}}
+Aucun Ingress n'est active. Pour un essai :
+
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "zimmplayer.fullname" . }}-web 8080:{{ .Values.web.service.port }}
+
+puis ouvrir http://localhost:8080 — a condition que publicBaseUrl vaille
+exactement cette adresse, sinon aucun son ne se lira.
+{{- else -}}
+Le service web est de type {{ .Values.web.service.type }} :
+
+    kubectl -n {{ .Release.Namespace }} get svc {{ include "zimmplayer.fullname" . }}-web
+{{- end }}
+
+Verifier que l'API est prete :
+
+    kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "zimmplayer.fullname" . }}-api -- \
+      python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/api/health').read())"
+
+Ensuite : alimenter le bucket S3 avec la musique, puis lancer un scan depuis
+la page Administration.
+
+{{ if .Values.snapcast.enabled -}}
+Snapcast
+--------
+Snapserver est deploye et l'API pointe dessus. Deux points a connaitre :
+
+  - les snapclients PHYSIQUES du reseau doivent joindre le port 1704 du
+    service {{ include "zimmplayer.snapserverService" . }}. Il est en
+    {{ .Values.snapcast.service.type }} : {{ if eq .Values.snapcast.service.type "ClusterIP" }}il n'est donc PAS joignable hors du
+    cluster. Passer snapcast.service.type a LoadBalancer ou NodePort.{{ else }}verifier l'adresse obtenue avec
+    `kubectl -n {{ .Release.Namespace }} get svc {{ include "zimmplayer.snapserverService" . }}`.{{ end }}
+
+  - redemarrer snapserver seul lui fait perdre les flux enregistres par
+    l'API. Redemarrer l'API ensuite les reinscrit tous :
+
+        kubectl -n {{ .Release.Namespace }} rollout restart deploy/{{ include "zimmplayer.fullname" . }}-api
+
+Ne pas modifier l'adresse annoncee depuis l'ecran Configuration : elle serait
+ecrite en base et prendrait le pas sur celle que la chart calcule.
+{{- else -}}
+Snapcast
+--------
+Snapserver n'est pas deploye (snapcast.enabled: false). Pour brancher celui du
+reseau, renseigner son adresse depuis l'ecran Configuration de
+l'application ; le reglage est conserve en base.
+{{- end }}
+
+{{- if not .Values.mariadb.persistence.storageClass }}
+
+Stockage
+--------
+mariadb.persistence.storageClass n'est pas renseigne : la classe par defaut du
+cluster sera utilisee. Verifier que le PVC est bien lie :
+
+    kubectl -n {{ .Release.Namespace }} get pvc
+{{- end }}

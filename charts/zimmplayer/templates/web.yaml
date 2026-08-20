@@ -1,0 +1,100 @@
+{{/*
+Front : le bundle React servi par nginx, qui fait aussi office de point
+d'entree unique (/, /api, /s3). Sans etat, donc replicable a volonte.
+
+Un point de vigilance : nginx REFUSE DE DEMARRER si l'hote d'un de ses
+upstreams ne resout pas. `s3.endpoint` doit donc etre resolvable depuis le
+cluster — une adresse IP est le choix sur. Un nom inconnu du DNS du cluster
+enverrait ces pods en CrashLoopBackOff, avec pour seul indice un
+« host not found in upstream » dans les journaux.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}-web
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "zimmplayer.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "zimmplayer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: web
+          image: "{{ .Values.image.front }}:{{ include "zimmplayer.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: API_UPSTREAM
+              value: {{ printf "http://%s-api:8000" (include "zimmplayer.fullname" .) | quote }}
+            - name: MINIO_UPSTREAM
+              value: {{ required "s3.endpoint est obligatoire" .Values.s3.endpoint | quote }}
+            - name: PROXY_SSL_VERIFY
+              value: {{ .Values.tls.proxySslVerify | quote }}
+            - name: PROXY_SSL_CA_FILE
+              # Le magasin d'Alpine par defaut : la directive doit rester
+              # syntaxiquement valide meme quand la verification est eteinte.
+              value: {{ default "/etc/ssl/certs/ca-certificates.crt" (include "zimmplayer.caPath" .) | quote }}
+          ports:
+            - name: http
+              containerPort: 80
+          # Les deux sondes visent la meme cible : nginx n'a rien a preparer
+          # avant de servir des fichiers deja presents dans l'image. Elle ne
+          # touche AUCUN upstream — lier l'etat du front a celui de l'API
+          # ferait disparaitre l'interface a chaque panne de l'API, alors
+          # qu'elle sait justement afficher l'erreur.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "zimmplayer.caVolumeMount" . | nindent 12 }}
+      volumes:
+        {{- include "zimmplayer.caVolume" . | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}-web
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: {{ .Values.web.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.web.service.port }}
+      targetPort: http
+  selector:
+    {{- include "zimmplayer.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: web
