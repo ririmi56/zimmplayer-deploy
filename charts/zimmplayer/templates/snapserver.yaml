@@ -1,0 +1,105 @@
+{{- if .Values.snapcast.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zimmplayer.snapserverService" . }}
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: snapserver
+spec:
+  # Un seul replica, non reglable : les flux sont enregistres en memoire du
+  # serveur par l'API, qui n'en connait qu'un. Un second n'aurait aucune
+  # session et rendrait du silence a un client sur deux.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "zimmplayer.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: snapserver
+  template:
+    metadata:
+      labels:
+        {{- include "zimmplayer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: snapserver
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/snapserver-config.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: snapserver
+          image: "{{ .Values.snapcast.image }}:{{ .Values.snapcast.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: audio
+              containerPort: 1704
+            - name: control
+              containerPort: 1780
+          # Vivacite : le serveur HTTP repond. C'est la meme verification que
+          # la sonde interne de l'image, faite ici par kubelet.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: control
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Disponibilite : le port audio accepte des connexions. C'est lui
+          # que les snapclients ouvrent — un serveur dont seul le controle
+          # repond ne diffuse rien.
+          readinessProbe:
+            tcpSocket:
+              port: audio
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources: {{- toYaml .Values.snapcast.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/snapserver.conf
+              subPath: snapserver.conf
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "zimmplayer.snapserverService" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zimmplayer.snapserverService" . }}
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: snapserver
+spec:
+  type: {{ .Values.snapcast.service.type }}
+  {{- with .Values.snapcast.service.loadBalancerIP }}
+  loadBalancerIP: {{ . | quote }}
+  {{- end }}
+  ports:
+    # 1704 : le flux audio vers les snapclients. Les enceintes physiques du
+    # reseau doivent joindre CE port — d'ou le type de service a passer en
+    # LoadBalancer ou NodePort si elles vivent hors du cluster.
+    - name: audio
+      port: 1704
+      targetPort: audio
+    # 1780 : controle JSON-RPC et WebSocket audio. Seule l'API s'en sert, le
+    # navigateur passant par elle.
+    - name: control
+      port: 1780
+      targetPort: control
+  selector:
+    {{- include "zimmplayer.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: snapserver
+{{- end }}

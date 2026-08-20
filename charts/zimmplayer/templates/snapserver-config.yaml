@@ -1,0 +1,50 @@
+{{- if .Values.snapcast.enabled }}
+{{/*
+Snapserver.
+
+Aucune source n'est declaree en dur : l'application enregistre elle-meme un
+flux par session (Stream.AddStream), en mode client — c'est snapserver qui
+vient se connecter au port ouvert par l'API. Seul le flux `silence` existe en
+permanence, pour que les groupes aient une source par defaut.
+
+L'image est celle de Rogger Fabri, qui embarque snapserver 0.35 : la syntaxe
+du fichier de configuration y a change depuis 0.29 ([tcp] est devenu
+[tcp-control], et le port audio a sa propre section [tcp-streaming]).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "zimmplayer.snapserverService" . }}
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: snapserver
+data:
+  snapserver.conf: |
+    [stream]
+    # Doit rester d'accord avec ce que l'API produit (voir services/snapoutput).
+    sampleformat = 48000:16:2
+    codec = flac
+    chunk_ms = 20
+    buffer = 1000
+    # Source inerte : snapserver cree le FIFO, personne n'y ecrit. Elle sert
+    # de source par defaut aux groupes tant qu'aucune session n'est branchee.
+    source = pipe:///tmp/snapfifo?name=silence&mode=create
+
+    [http]
+    enabled = true
+    bind_to_address = 0.0.0.0
+    port = 1780
+    # Snapweb : inutile a l'application, precieux pour diagnostiquer — c'est
+    # en comparant avec lui qu'on distingue une panne du serveur d'une panne
+    # du client navigateur.
+    doc_root = /usr/share/snapserver/snapweb
+
+    [tcp-streaming]
+    enabled = true
+    bind_to_address = 0.0.0.0
+    port = 1704
+
+    [logging]
+    sink = stdout
+    filter = *:info
+{{- end }}

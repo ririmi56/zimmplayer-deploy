@@ -12,7 +12,7 @@ projet :
 |---|---|
 | [`zimmplayer-back`](https://github.com/ririmi56/zimmplayer-back) | API (FastAPI) |
 | [`zimmplayer-front`](https://github.com/ririmi56/zimmplayer-front) | Client web (React) |
-| `zimmplayer-deploy` (ce dépôt) | Orchestration, configuration, livrable airgap |
+| `zimmplayer-deploy` (ce dépôt) | Orchestration (compose et chart Helm), configuration, livrable airgap |
 
 ## Démarrage rapide (réseau normal)
 
@@ -25,6 +25,9 @@ docker compose up -d
 Ensuite : alimenter le bucket MinIO avec la musique (organisée en
 `Artiste/Album/NN - Titre.ext`), puis lancer un scan depuis la page
 **Administration** de l'application.
+
+Sur Kubernetes, la même stack se déploie par la [chart
+Helm](#kubernetes--la-chart-helm) — snapserver compris.
 
 Pas de MinIO sous la main pour un premier essai ? Un service jetable est fourni
 derrière un profil, voir [MinIO jetable](#minio-jetable-pour-un-essai).
@@ -299,31 +302,171 @@ demande un redéploiement.
 
 ### Snapcast et Kubernetes (ou tout environnement à IP non stable)
 
-Si l'API tourne dans un pod dont l'IP change à chaque reprogrammation,
-**ne pas** utiliser cette IP directement dans `SNAPCAST_ADVERTISE_HOST` :
+**La chart Helm règle déjà tout ce qui suit** ; cette section explique ce
+qu'elle fait, pour qui écrit ses propres manifestes.
 
-- si snapserver vit **dans le même cluster**, pointer vers le nom DNS d'un
-  **Service** stable (`zimmplayer-api.mon-namespace.svc.cluster.local`, ou en
-  forme courte si même namespace) plutôt que vers un pod. Le Service garde la
-  même IP virtuelle quel que soit le pod qui le sert à un instant donné, et
+Si l'API tourne dans un pod dont l'IP change à chaque reprogrammation, **ne
+pas** figer cette IP dans `SNAPCAST_ADVERTISE_HOST`. Deux routes marchent, et
+elles ne coûtent pas la même chose :
+
+- **Un Service sans `clusterIP` (« headless »)**, ce que fait la chart. Le DNS
+  rend alors l'IP **du pod**, et snapserver ouvre sa connexion dessus
+  directement : la plage `SNAPCAST_PORT_START`…`_END` n'a **rien à déclarer**,
+  puisque aucun Service ne relaie. L'IP change à chaque reprogrammation, mais
   l'API la re-résout à chaque session créée et à chaque redémarrage
-  (`restore()` reconstruit tous les flux au démarrage) — un pod remplacé ne
-  casse donc rien.
-- si snapserver vit **hors du cluster**, l'IP virtuelle d'un Service
-  `ClusterIP` n'est en général pas joignable de l'extérieur : il faut une
-  adresse réellement externe (`NodePort`, `LoadBalancer`/MetalLB, ou
-  `hostNetwork` sur le pod), et c'est celle-là qu'il faut avancer.
-- la plage `SNAPCAST_PORT_START`…`_END` doit être **explicitement déclarée**
-  dans le Service (chaque port un par un — Kubernetes ne sait pas exposer une
-  plage dynamique) ou, plus simple si le cas s'y prête, faire tourner le pod
-  en `hostNetwork: true`.
+  (`restore()` reconstruit tous les flux au démarrage).
+
+  Ce Service doit porter `publishNotReadyAddresses: true`. Sans lui, le DNS ne
+  publie que les adresses *prêtes* — or `restore()` tourne **avant** que le
+  pod le soit. Mesuré : l'API journalise alors `impossible de resoudre
+  '…-api-direct' en adresse IP`, snapserver reste pointé sur l'IP du pod
+  **précédent**, et toutes les sessions restent muettes jusqu'à une
+  intervention manuelle.
+
+- **Un Service `ClusterIP` ordinaire**, dont l'IP virtuelle est stable. Il
+  faut alors y **déclarer chaque port un par un** — Kubernetes ne sait pas
+  exposer une plage.
+
+Si snapserver vit **hors du cluster**, ni l'une ni l'autre ne suffit : il lui
+faut une adresse réellement joignable de l'extérieur (`NodePort`,
+`LoadBalancer`/MetalLB, ou `hostNetwork` sur le pod), et c'est celle-là qu'il
+faut annoncer.
+
+Dernier piège, propre à l'application : `SNAPCAST_ADVERTISE_HOST` n'est qu'une
+**valeur par défaut**. Dès qu'on touche à ce champ depuis l'écran
+Configuration, il est écrit en base et c'est lui qui prime — l'environnement
+n'est plus lu, et l'adresse se fige. Sur un cluster, ne pas y toucher.
 
 **Contrainte plus fondamentale, indépendante de Kubernetes** : ce mécanisme
 garde son état (flux ouverts, sockets en écoute) **en mémoire du process
 API**, jamais partagé entre plusieurs instances. Snapcast n'est donc
-utilisable qu'avec **une seule replica** de `api` à la fois — un
-`Deployment` avec `replicas: 1` (ou un `StatefulSet` à une seule instance) et
-sans mise à l'échelle automatique sur ce composant.
+utilisable qu'avec **une seule replica** de `api` à la fois. C'est pourquoi la
+chart fixe `replicas: 1` sans l'exposer en réglage, et déploie l'API en
+`strategy: Recreate` : pendant un `RollingUpdate`, l'ancien et le nouveau pod
+tiendraient tous deux la même plage de ports.
+
+## Kubernetes : la chart Helm
+
+`charts/zimmplayer` déploie la stack entière — front, API, MariaDB et
+snapserver — en un `helm install`. Le **stockage S3 reste extérieur**, comme
+pour le compose.
+
+```bash
+helm install zimmplayer charts/zimmplayer \
+  --namespace zimmplayer --create-namespace \
+  --set publicBaseUrl=http://musique.maison.lan \
+  --set s3.endpoint=http://192.168.10.10:9000 \
+  --set s3.accessKey=zimmplayer-reader \
+  --set s3.secretKey=une-cle-secrete-dediee \
+  --set mariadb.rootPassword=... \
+  --set mariadb.password=... \
+  --set mariadb.persistence.storageClass=longhorn
+```
+
+Les valeurs sans défaut possible font **échouer l'installation** avec un
+message qui les nomme, plutôt que de démarrer une stack qui ne lira rien :
+`publicBaseUrl`, `s3.endpoint`, `s3.accessKey`, `s3.secretKey`,
+`mariadb.rootPassword`, `mariadb.password`.
+
+### Classe de stockage
+
+Deux volumes, chacun avec sa classe :
+
+| Valeur | Volume | Défaut |
+|---|---|---|
+| `mariadb.persistence.storageClass` | la base | classe par défaut du cluster |
+| `api.persistence.storageClass` | les pochettes extraites | classe par défaut du cluster |
+
+Trois formes sont acceptées :
+
+- **vide** — la classe par défaut du cluster ;
+- **`"-"`** — *aucune* classe (`storageClassName: ""`), pour lier un PV créé à
+  la main. C'est le cas des clusters sans provisionneur dynamique, où laisser
+  la valeur vide laisserait le PVC en `Pending` sans expliquer pourquoi ;
+- **un nom** — cette classe-là.
+
+**Aucun des deux volumes n'est effacé par `helm uninstall`** — vérifié : les
+deux PVC sont toujours là après désinstallation. Celui des pochettes porte
+`helm.sh/resource-policy: keep` (elles se régénèrent depuis le bucket, mais un
+scan complet coûte cher) ; celui de la base vient d'un `volumeClaimTemplate`,
+que Kubernetes ne ramasse pas avec le StatefulSet.
+
+C'est rassurant pour une mise à jour, et **piégeux pour une réinstallation** :
+réinstaller sous le même nom de release reprend la base d'avant. Pour repartir
+d'une base vierge, supprimer les PVC explicitement.
+
+### Sondes
+
+| Composant | Vivacité | Disponibilité |
+|---|---|---|
+| `api` | `/api/health/live` — ne touche pas la base | `/api/health/ready` — vérifie la base, 503 sinon |
+| `web` | `/healthz` — aucun upstream | `/healthz` |
+| `mariadb` | `healthcheck.sh --connect` | `healthcheck.sh --connect --innodb_initialized` |
+| `snapserver` | HTTP sur 1780 | port audio 1704 ouvert |
+
+Les deux dissociations ne sont pas décoratives :
+
+- l'API garde une vivacité **aveugle à la base**. Sinon une panne de MariaDB
+  la ferait tuer et redémarrer en boucle, sans jamais rien réparer, et en
+  l'empêchant de reprendre au retour de la base. Vérifié sur cluster : base
+  arrêtée, le pod passe `0/1` et sort du Service, **`RESTARTS` reste à 0**, et
+  il redevient prêt tout seul quand la base revient ;
+- le front ne consulte **aucun upstream**. Lier son état à celui de l'API
+  ferait disparaître l'interface à chaque panne de l'API — alors que c'est
+  précisément elle qui sait afficher l'erreur ;
+- MariaDB distingue « le serveur répond » de « il peut servir des requêtes » :
+  une récupération InnoDB longue satisfait le premier et pas le second. Une
+  vivacité sur le second tuerait une base en train de se réparer.
+
+Une sonde de démarrage (`startupProbe`) couvre les migrations Alembic, qui
+tournent **avant** uvicorn : jusqu'à cinq minutes, sans que les deux autres
+sondes ne s'en mêlent.
+
+### Réglages courants
+
+| Valeur | Rôle | Défaut |
+|---|---|---|
+| `image.tag` | version des images `back`/`front` | `appVersion` de la chart |
+| `web.replicaCount` | replicas du front (sans état) | `2` |
+| `ingress.enabled`, `ingress.host`, `ingress.className` | exposition HTTP | désactivé |
+| `snapcast.enabled` | déployer snapserver | `true` |
+| `snapcast.tag` | tag de l'image snapserver | `amd64-latest` |
+| `snapcast.service.type` | joignabilité du port 1704 | `ClusterIP` |
+| `oidc.*`, `superAdmins` | identité, voir plus haut | désactivé |
+| `tls.existingSecret` / `tls.existingConfigMap` | autorité interne, montée dans `api` et `web` | aucune |
+
+Ce que la chart **n'expose pas**, volontairement : le nombre de replicas de
+l'API et de snapserver. Tous deux gardent leur état en mémoire du processus ;
+proposer le réglage laisserait croire qu'on peut les mettre à l'échelle.
+
+### Trois pièges
+
+- **`s3.endpoint` doit être résolvable depuis le cluster.** nginx refuse de
+  démarrer si l'hôte d'un upstream ne résout pas : les pods `web` partiraient
+  en `CrashLoopBackOff`, avec pour seul indice un `host not found in upstream`
+  dans les journaux. Une adresse IP est le choix sûr.
+- **`publicBaseUrl` doit être l'adresse exacte tapée par les utilisateurs**,
+  port compris — c'est la cause de loin la plus probable d'une lecture qui ne
+  démarre pas. Avec un Ingress, `ingress.host` doit s'y accorder.
+- **Les snapclients physiques du réseau doivent joindre le port 1704** du
+  service snapserver. Il est en `ClusterIP` par défaut, donc injoignable hors
+  du cluster : passer `snapcast.service.type` à `LoadBalancer` ou `NodePort`.
+
+Redémarrer snapserver seul lui fait perdre les flux enregistrés par l'API ;
+un `kubectl rollout restart deploy/<release>-zimmplayer-api` les réinscrit
+tous.
+
+### Image de snapserver
+
+`rfabri/snapserver` (Rogger Fabri), snapserver **0.35**. Deux particularités :
+
+- elle ne publie **ni tag `latest` ni manifeste multi-architecture** : le tag
+  porte l'architecture. `amd64-latest` par défaut, `arm64v8-latest` sur
+  Raspberry Pi ;
+- la syntaxe du fichier de configuration a changé depuis la 0.29 : `[tcp]` est
+  devenu `[tcp-control]`, et le port audio a sa propre section
+  `[tcp-streaming]`. La `ConfigMap` de la chart est écrite pour la 0.35 —
+  recopier telle quelle une configuration 0.29 ne marcherait pas.
 
 ## Livrable pour un réseau airgap
 
@@ -333,10 +476,11 @@ Depuis un poste **connecté** :
 bash scripts/bundle_airgap.sh
 ```
 
-Tire les quatre images (`zimmplayer-front`, `zimmplayer-back`, `mariadb`,
-`minio`) — `FRONT_TAG`/`BACK_TAG` en variables d'environnement pour choisir une
-version précise plutôt que `latest` — et produit `dist-airgap/` : les images
-exportées (`images.tar.gz`), `docker-compose.yml`, `.env.example`, et un
+Tire les cinq images (`zimmplayer-front`, `zimmplayer-back`, `snapserver`,
+`mariadb`, `minio`) — `FRONT_TAG`/`BACK_TAG`/`SNAP_TAG` en variables
+d'environnement pour choisir une version précise plutôt que `latest` — et
+produit `dist-airgap/` : les images exportées (`images.tar.gz`),
+`docker-compose.yml`, `.env.example`, la chart Helm (`charts/`), et un
 `INSTALL.md` prêt à suivre sur la cible. Transférer tout le dossier, puis sur
 la cible :
 
@@ -345,6 +489,11 @@ gunzip -c images.tar.gz | docker load
 cp .env.example .env    # éditer PUBLIC_BASE_URL et les mots de passe
 docker compose up -d
 ```
+
+Pour une cible **Kubernetes**, l'`INSTALL.md` généré décrit la même chose avec
+la chart. Attention : `docker load` ne suffit alors pas, sauf si le cluster
+tourne sous Docker — les images doivent entrer dans le runtime de *chaque*
+nœud (`ctr -n k8s.io images import`), ou passer par un registre interne.
 
 ## Ce qui n'est volontairement pas ici
 

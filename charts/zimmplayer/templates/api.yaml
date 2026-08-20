@@ -1,0 +1,293 @@
+{{/*
+API.
+
+UN SEUL REPLICA, et le nombre n'est pas reglable — ce n'est pas un oubli :
+
+  - la sortie Snapcast tient en memoire du processus (un ffmpeg et un port TCP
+    en ecoute par session diffusee). Un second pod ouvrirait ses propres ports
+    sans rien savoir de ceux du premier ;
+  - snapserver vient chercher chaque flux sur l'IP d'UN pod precis, annoncee
+    au moment ou la session est creee. Un Service qui repartit les connexions
+    enverrait snapserver sur le mauvais pod une fois sur deux ;
+  - le volume des pochettes est en ReadWriteOnce.
+
+`Recreate` pour la meme raison : pendant un `RollingUpdate`, l'ancien et le
+nouveau pod tiendraient tous deux la meme plage de ports, et le second
+echouerait a demarrer.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}-api
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "zimmplayer.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "zimmplayer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        # Redemarre l'API quand un secret change : sans cela, un mot de passe
+        # modifie ne serait pris en compte qu'au prochain redeploiement.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Le point d'entree de l'image applique les migrations Alembic avant
+        # de lancer uvicorn. Sans base, elles echouent et le conteneur sort :
+        # Kubernetes reessaie, mais le CrashLoopBackOff monte jusqu'a cinq
+        # minutes d'attente, ce qui rend la premiere installation
+        # desagreable pour rien. On attend donc ici, avec l'image de l'API
+        # elle-meme — aucune image supplementaire a tirer sur un site airgap.
+        - name: attendre-mariadb
+          image: "{{ .Values.image.back }}:{{ include "zimmplayer.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              hote = "{{ include "zimmplayer.fullname" . }}-mariadb"
+              for _ in range(180):
+                  try:
+                      socket.create_connection((hote, 3306), timeout=2).close()
+                      sys.exit(0)
+                  except OSError:
+                      time.sleep(2)
+              sys.exit("mariadb injoignable apres six minutes")
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+      containers:
+        - name: api
+          image: "{{ .Values.image.back }}:{{ include "zimmplayer.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zimmplayer.secretName" . }}
+                  key: database-url
+            - name: PUBLIC_BASE_URL
+              value: {{ required "publicBaseUrl est obligatoire : les URLs audio sont signees pour cette adresse" .Values.publicBaseUrl | quote }}
+            - name: S3_ENDPOINT
+              value: {{ required "s3.endpoint est obligatoire" .Values.s3.endpoint | quote }}
+            # Le navigateur passe par nginx, qui expose MinIO sous /s3 : la
+            # signature doit donc porter cette adresse-la, pas l'interne.
+            - name: S3_PUBLIC_BASE_URL
+              value: {{ printf "%s/s3" .Values.publicBaseUrl | quote }}
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zimmplayer.secretName" . }}
+                  key: s3-access-key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zimmplayer.secretName" . }}
+                  key: s3-secret-key
+            - name: S3_BUCKET
+              value: {{ .Values.s3.bucket | quote }}
+            - name: S3_PREFIX
+              value: {{ .Values.s3.prefix | quote }}
+            - name: S3_REGION
+              value: {{ .Values.s3.region | quote }}
+            - name: COVER_DIR
+              value: /data/covers
+            - name: SCAN_CONCURRENCY
+              value: {{ .Values.api.scanConcurrency | quote }}
+            - name: SUPER_ADMINS
+              value: {{ .Values.superAdmins | quote }}
+            {{- with (include "zimmplayer.caPath" .) }}
+            - name: TLS_CA_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: OIDC_ENABLED
+              value: {{ .Values.oidc.enabled | quote }}
+            {{- if .Values.oidc.enabled }}
+            - name: OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zimmplayer.secretName" . }}
+                  key: oidc-client-secret
+            - name: OIDC_SCOPES
+              value: {{ .Values.oidc.scopes | quote }}
+            - name: OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zimmplayer.secretName" . }}
+                  key: session-secret
+            {{- end }}
+            - name: SNAPCAST_ENABLED
+              value: {{ .Values.snapcast.enabled | quote }}
+            {{- if .Values.snapcast.enabled }}
+            - name: SNAPCAST_HOST
+              value: {{ include "zimmplayer.snapserverService" . | quote }}
+            - name: SNAPCAST_HTTP_PORT
+              value: "1780"
+            # Adresse que l'API annonce a snapserver pour qu'il vienne
+            # chercher le flux. Le Service sans ClusterIP ci-dessous resout
+            # vers l'IP DU POD : c'est necessaire, snapserver se connectant
+            # sur une plage de ports qu'aucun Service ne declare.
+            #
+            # ATTENTION : ce reglage n'est qu'un DEFAUT. Des qu'il est modifie
+            # depuis l'ecran Configuration, la valeur est ecrite en base et
+            # c'est elle qui prime — l'environnement n'est plus lu. Sur un
+            # cluster, ne pas y toucher.
+            - name: SNAPCAST_ADVERTISE_HOST
+              value: {{ include "zimmplayer.apiDirectService" . | quote }}
+            - name: SNAPCAST_PORT_START
+              value: {{ .Values.snapcast.portStart | quote }}
+            - name: SNAPCAST_PORT_COUNT
+              value: {{ .Values.snapcast.portCount | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+            {{- if .Values.snapcast.enabled }}
+            {{- range $i := until (int .Values.snapcast.portCount) }}
+            - name: {{ printf "snap-%d" $i }}
+              containerPort: {{ add $.Values.snapcast.portStart $i }}
+            {{- end }}
+            {{- end }}
+          # Les migrations Alembic tournent AVANT uvicorn : tant qu'elles
+          # durent, rien n'ecoute sur 8000. La sonde de demarrage couvre ce
+          # temps-la, et c'est elle qui retient les deux autres.
+          startupProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          # Vivacite sur /live, qui ne touche pas la base : autrement une
+          # panne de MariaDB ferait tuer l'API en boucle, sans jamais rien
+          # reparer — et l'empecherait de reprendre au retour de la base.
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          # Disponibilite sur /ready, qui verifie la base : presque toutes les
+          # routes la lisent, une API sans base ne sert a rien.
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: covers
+              mountPath: /data/covers
+            {{- include "zimmplayer.caVolumeMount" . | nindent 12 }}
+      volumes:
+        - name: covers
+          {{- if .Values.api.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "zimmplayer.fullname" . }}-covers
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- include "zimmplayer.caVolume" . | nindent 8 }}
+{{- if .Values.api.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}-covers
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  annotations:
+    # Les pochettes se regenerent depuis le bucket, mais un scan complet coute
+    # cher : on ne jette pas ce volume avec la release par megarde.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if eq .Values.api.persistence.storageClass "-" }}
+  storageClassName: ""
+  {{- else if .Values.api.persistence.storageClass }}
+  storageClassName: {{ .Values.api.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.api.persistence.size | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}-api
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+  selector:
+    {{- include "zimmplayer.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+{{- if .Values.snapcast.enabled }}
+---
+{{/*
+Adresse directe du pod de l'API, pour snapserver.
+
+Sans ClusterIP : le DNS rend l'IP du pod, et snapserver peut alors ouvrir une
+connexion sur n'importe lequel des ports de la plage — un Service ordinaire
+ne relaierait que les ports qu'il declare.
+
+`publishNotReadyAddresses` n'est pas un detail : au demarrage, l'API
+re-enregistre le flux de chaque session (snapoutput.restore) AVANT d'etre
+prete. Sans ce reglage, le DNS ne rendrait encore rien et aucune session ne
+serait restauree — elles resteraient muettes jusqu'a une intervention.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zimmplayer.apiDirectService" . }}
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+  selector:
+    {{- include "zimmplayer.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+{{- end }}

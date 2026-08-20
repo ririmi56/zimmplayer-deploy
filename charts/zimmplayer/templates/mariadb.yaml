@@ -1,0 +1,135 @@
+{{/*
+Base de donnees.
+
+StatefulSet et non Deployment : le volume doit suivre le pod, et un
+Deployment avec un PVC en ReadWriteOnce sait creer un second pod qui restera
+bloque a monter un volume deja pris. `volumeClaimTemplates` donne en prime
+un nom de PVC stable et lisible.
+
+Un seul replica, sans option pour en demander plus : MariaDB ne se replique
+pas en ajoutant des pods, et proposer le reglage laisserait croire le
+contraire.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}-mariadb
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mariadb
+spec:
+  serviceName: {{ include "zimmplayer.fullname" . }}-mariadb
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "zimmplayer.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mariadb
+  template:
+    metadata:
+      labels:
+        {{- include "zimmplayer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mariadb
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mariadb
+          image: {{ .Values.mariadb.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
+            # La recherche plein texte doit trouver les titres de deux
+            # lettres ; le defaut de MariaDB les ignore.
+            - --innodb-ft-min-token-size=2
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zimmplayer.secretName" . }}
+                  key: db-root-password
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zimmplayer.secretName" . }}
+                  key: db-password
+            - name: MARIADB_DATABASE
+              value: {{ .Values.mariadb.database | quote }}
+            - name: MARIADB_USER
+              value: {{ .Values.mariadb.user | quote }}
+          ports:
+            - name: mysql
+              containerPort: 3306
+          # Le script de l'image officielle, celui-la meme qu'utilise le
+          # docker-compose du depot.
+          #
+          # Vivacite et disponibilite ne posent PAS la meme question :
+          # `--connect` seul dit que le serveur repond, `--innodb_initialized`
+          # qu'il peut servir des requetes. Une recuperation InnoDB longue
+          # repond au premier et pas au second : la sonde de vivacite doit
+          # donc rester sur le premier, sinon on tue une base en train de se
+          # reparer — et on recommence indefiniment.
+          startupProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            periodSeconds: 5
+            # Cinq minutes : une recuperation InnoDB apres coupure brutale.
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect"]
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources: {{- toYaml .Values.mariadb.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if eq .Values.mariadb.persistence.storageClass "-" }}
+        {{- /* Aucune classe : le PVC ne sera lie qu'a un PV cree a la main.
+               Sans cette forme, un cluster sans provisionneur dynamique
+               laisserait le PVC en Pending sans qu'on sache pourquoi. */}}
+        storageClassName: ""
+        {{- else if .Values.mariadb.persistence.storageClass }}
+        storageClassName: {{ .Values.mariadb.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mariadb.persistence.size | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zimmplayer.fullname" . }}-mariadb
+  labels:
+    {{- include "zimmplayer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mariadb
+spec:
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+  selector:
+    {{- include "zimmplayer.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mariadb
