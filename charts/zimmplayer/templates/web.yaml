@@ -42,7 +42,7 @@ spec:
       containers:
         - name: web
           image: "{{ .Values.image.front }}:{{ include "zimmplayer.imageTag" . }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "zimmplayer.pullPolicy" . }}
           env:
             - name: API_UPSTREAM
               value: {{ printf "http://%s-api:8000" (include "zimmplayer.fullname" .) | quote }}

@@ -36,7 +36,13 @@ s3:
 image:
   # Vide = appVersion de la chart. Mettre `latest` pour suivre master.
   tag: ""
-  pullPolicy: IfNotPresent
+  # Vide = deduite du tag. Un tag MOUVANT (`latest`, ou tout `*-dev`) impose
+  # `Always` : avec `IfNotPresent`, le noeud garde indefiniment la premiere
+  # image tiree sous ce nom, et l'on croit tester la derniere version alors
+  # qu'on execute une ancienne. Un tag de version, immuable, garde
+  # `IfNotPresent` — ce qui evite de retirer l'image a chaque demarrage de pod,
+  # precieux sur un reseau airgap. Renseigner ici pour trancher soi-meme.
+  pullPolicy: ""
   back: ghcr.io/ririmi56/zimmplayer-back
   front: ghcr.io/ririmi56/zimmplayer-front
 imagePullSecrets: []

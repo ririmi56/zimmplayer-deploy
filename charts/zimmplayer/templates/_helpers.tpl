@@ -27,6 +27,32 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default .Chart.AppVersion .Values.image.tag -}}
 {{- end -}}
 
+{{/*
+Politique de tirage des images.
+
+Un tag MOUVANT (`latest`, ou tout `*-dev`) pointe un contenu different d'un
+jour a l'autre. Avec `IfNotPresent`, le noeud garde indefiniment la premiere
+image tiree sous ce nom : aucun `helm upgrade` ne la remplace, et l'on croit
+tester la derniere version alors qu'on execute celle d'il y a trois jours.
+C'est arrive le 2026-09-01.
+
+Un tag de version, lui, est immuable : `IfNotPresent` evite alors de retirer
+des centaines de mega-octets a chaque demarrage de pod — ce qui compte sur un
+reseau airgap.
+
+`image.pullPolicy` renseigne explicitement l'emporte sur ce choix.
+*/}}
+{{- define "zimmplayer.pullPolicy" -}}
+{{- $tag := include "zimmplayer.imageTag" . -}}
+{{- if .Values.image.pullPolicy -}}
+{{- .Values.image.pullPolicy -}}
+{{- else if or (eq $tag "latest") (hasSuffix "-dev" $tag) -}}
+Always
+{{- else -}}
+IfNotPresent
+{{- end -}}
+{{- end -}}
+
 {{- define "zimmplayer.secretName" -}}
 {{- printf "%s-secrets" (include "zimmplayer.fullname" .) -}}
 {{- end -}}

@@ -45,7 +45,7 @@ spec:
       containers:
         - name: mariadb
           image: {{ .Values.mariadb.image | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "zimmplayer.pullPolicy" . }}
           args:
             - --character-set-server=utf8mb4
             - --collation-server=utf8mb4_unicode_ci
