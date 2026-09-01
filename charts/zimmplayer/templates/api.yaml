@@ -61,7 +61,7 @@ spec:
         # elle-meme — aucune image supplementaire a tirer sur un site airgap.
         - name: attendre-mariadb
           image: "{{ .Values.image.back }}:{{ include "zimmplayer.imageTag" . }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "zimmplayer.pullPolicy" . }}
           command:
             - python
             - -c
@@ -82,7 +82,7 @@ spec:
       containers:
         - name: api
           image: "{{ .Values.image.back }}:{{ include "zimmplayer.imageTag" . }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "zimmplayer.pullPolicy" . }}
           env:
             - name: DATABASE_URL
               valueFrom:

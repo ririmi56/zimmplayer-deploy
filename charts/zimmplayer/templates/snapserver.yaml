@@ -40,7 +40,7 @@ spec:
       containers:
         - name: snapserver
           image: "{{ .Values.snapcast.image }}:{{ .Values.snapcast.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "zimmplayer.pullPolicy" . }}
           ports:
             - name: audio
               containerPort: 1704

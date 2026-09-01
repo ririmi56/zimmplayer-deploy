@@ -422,6 +422,38 @@ Une sonde de démarrage (`startupProbe`) couvre les migrations Alembic, qui
 tournent **avant** uvicorn : jusqu'à cinq minutes, sans que les deux autres
 sondes ne s'en mêlent.
 
+### Essayer une version en préparation
+
+La branche `1.1` publie une image `1.1.0-dev` à chaque poussée : **le tag est
+mouvant**, son contenu change d'une heure à l'autre.
+
+```bash
+helm upgrade zimmplayer charts/zimmplayer --reuse-values --set image.tag=1.1.0-dev
+```
+
+Deux pièges, et le second en attrape tout le monde :
+
+- **`imagePullPolicy`.** Avec `IfNotPresent`, le nœud garde indéfiniment la
+  première image tirée sous ce nom. La chart choisit donc `Always` d'elle-même
+  dès que le tag vaut `latest` ou finit par `-dev` ; `image.pullPolicy`
+  renseigné explicitement l'emporte.
+- **Un `helm upgrade` qui ne change rien ne redéploie rien.** Si le tag est
+  déjà `1.1.0-dev`, le manifeste produit est identique au précédent, donc
+  Kubernetes ne recrée aucun pod — et l'image reste celle d'avant, quelle que
+  soit la politique de tirage. Il faut forcer le remplacement :
+
+      kubectl -n <namespace> rollout restart deploy/<release>-zimmplayer-web
+      kubectl -n <namespace> rollout restart deploy/<release>-zimmplayer-api
+
+Pour savoir ce qui tourne réellement, le numéro affiché en bas de la barre
+latérale ne suffit pas : toutes les images de la branche annoncent
+`1.1.0-dev`. Le digest, lui, tranche :
+
+    kubectl -n <namespace> get pod -l app.kubernetes.io/component=web \
+      -o jsonpath='{.items[0].status.containerStatuses[0].imageID}'
+
+à comparer avec `docker manifest inspect ghcr.io/ririmi56/zimmplayer-front:1.1.0-dev`.
+
 ### Réglages courants
 
 | Valeur | Rôle | Défaut |
